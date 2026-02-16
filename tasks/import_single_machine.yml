@@ -1,0 +1,60 @@
+---
+- name: "[{{ vm_data.name }}] 1. Esperar a que AWS termine la exportación"
+  delegate_to: localhost
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+  shell: >
+    aws ec2 describe-export-image-tasks 
+    --export-image-task-ids {{ vm_data.task_id }} 
+    --query 'ExportImageTasks[0].Status' 
+    --output text
+  register: task_status
+  until: task_status.stdout == "completed"
+  retries: 180     # 180 intentos * 20 seg = 60 minutos máx de espera por máquina
+  delay: 20
+  failed_when: task_status.stdout in ['deleted', 'deleting', 'cancelled']
+
+- name: "[{{ vm_data.name }}] 2. Descargar disco ({{ vm_data.task_id }})"
+  become: true
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+  shell: >
+    /usr/local/bin/aws s3 cp 
+    s3://{{ s3_bucket }}/exports/{{ vm_data.task_id }}.vmdk 
+    {{ proxmox_temp_path }}/{{ vm_data.task_id }}.vmdk
+  async: 7200
+  poll: 10
+
+- name: "[{{ vm_data.name }}] 3. Crear VM {{ vm_data.vmid }}"
+  become: true
+  command: >
+    qm create {{ vm_data.vmid }} 
+    --name "{{ vm_data.name }}" 
+    --memory {{ vm_data.ram }} 
+    --cores {{ vm_data.cores }} 
+    --net0 virtio,bridge={{ proxmox_bridge }} 
+    --ostype l26
+  ignore_errors: yes
+
+- name: "[{{ vm_data.name }}] 4. Importar disco"
+  become: true
+  command: >
+    qm importdisk {{ vm_data.vmid }} 
+    {{ proxmox_temp_path }}/{{ vm_data.task_id }}.vmdk 
+    {{ proxmox_storage }}
+
+- name: "[{{ vm_data.name }}] 5. Configurar arranque"
+  become: true
+  shell: |
+    qm set {{ vm_data.vmid }} --sata0 {{ proxmox_storage }}:vm-{{ vm_data.vmid }}-disk-0
+    qm set {{ vm_data.vmid }} --boot order=sata0
+
+- name: "[{{ vm_data.name }}] 6. Limpieza"
+  become: true
+  file:
+    path: "{{ proxmox_temp_path }}/{{ vm_data.task_id }}.vmdk"
+    state: absent
