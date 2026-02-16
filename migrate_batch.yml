@@ -1,0 +1,98 @@
+---
+# ==============================================================================
+# PLAY 1: AWS - LANZAMIENTO MASIVO DE EXPORTACIONES
+# ==============================================================================
+- name: "FASE 1: Disparar Exportaciones en AWS"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars_batch.yml
+    - secrets.yml
+
+  tasks:
+    - name: "1. Crear archivo temporal para guardar estado"
+      copy:
+        content: "[]"
+        dest: "/tmp/active_migrations.json"
+        force: yes
+
+    - name: "2. Solicitar Exportación a AWS (Bucle)"
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ aws_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ aws_secret_key }}"
+        AWS_DEFAULT_REGION: "{{ aws_region }}"
+      shell: >
+        aws ec2 export-image 
+        --instance-id {{ item.aws_id }} 
+        --disk-image-format VMDK 
+        --s3-export-location S3Bucket={{ s3_bucket }},S3Prefix=exports/ 
+        --role-name {{ aws_role_name }}
+        --output json
+      register: aws_results
+      loop: "{{ migrations }}"
+      no_log: true # Ocultar salida masiva para limpieza
+
+    - name: "3. Guardar IDs de tareas y datos de VM"
+      set_fact:
+        active_migrations_list: >-
+          {{
+            active_migrations_list | default([]) + 
+            [{
+              'name': item.item.name,
+              'vmid': item.item.vmid,
+              'ram': item.item.ram,
+              'cores': item.item.cores,
+              'task_id': (item.stdout | from_json).ExportImageTaskId
+            }]
+          }}
+      loop: "{{ aws_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "4. Escribir datos de migración en disco (para pasarlos al siguiente play)"
+      copy:
+        content: "{{ active_migrations_list | to_nice_json }}"
+        dest: "/tmp/active_migrations.json"
+
+    - name: "RESUMEN FASE 1"
+      debug:
+        msg: "Se han iniciado {{ migrations | length }} exportaciones en AWS. Pasando a Proxmox..."
+
+
+# ==============================================================================
+# PLAY 2: PROXMOX - IMPORTACIÓN SECUENCIAL
+# ==============================================================================
+- name: "FASE 2: Procesar Importaciones en Proxmox"
+  hosts: proxmox
+  gather_facts: true
+  vars_files:
+    - vars_batch.yml
+    - secrets.yml
+
+  vars:
+    # Cargamos la lista que generó el Play anterior
+    batch_list: "{{ lookup('file', '/tmp/active_migrations.json') | from_json }}"
+
+  tasks:
+    - name: "0. Instalar dependencias en Proxmox"
+      become: true
+      apt:
+        name: [unzip, python3-pip, jq]
+        state: present
+
+    - name: "0. Instalar AWS CLI"
+      become: true
+      shell: |
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip -o awscliv2.zip && ./aws/install --update
+      args:
+        creates: /usr/local/bin/aws
+
+    # --- INICIO DEL BUCLE DE IMPORTACIÓN POR MÁQUINA ---
+    - name: ">>> PROCESANDO MÁQUINA INDIVIDUAL"
+      include_tasks: tasks/import_single_machine.yml
+      loop: "{{ batch_list }}"
+      loop_control:
+        loop_var: vm_data
+        label: "{{ vm_data.name }} (VMID: {{ vm_data.vmid }})"

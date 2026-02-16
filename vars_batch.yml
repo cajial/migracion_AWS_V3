@@ -1,0 +1,19 @@
+---
+# Configuración General
+aws_region: "eu-south-2"
+s3_bucket: "cloudrack-migration"
+aws_role_name: "vmimport"
+
+# Configuración Proxmox General
+proxmox_storage: "local-lvm"
+proxmox_bridge: "vmbr0"
+proxmox_temp_path: "/var/lib/vz/dump"
+
+# 🚀 LISTA DE MÁQUINAS A MIGRAR
+# Añade aquí todas las instancias que quieras
+migrations:
+  - name: "Web-Server-01"
+    aws_id: "i-0aaaaaaaaaaaaaaa"  # ID en AWS
+    vmid: 105                     # ID nuevo en Proxmox
+    ram: 4096                     # RAM MB
+    cores: 2

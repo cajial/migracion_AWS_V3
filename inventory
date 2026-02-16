@@ -1,0 +1,9 @@
+[proxmox]
+# Tu servidor real con el puerto y usuario correctos
+pve-server ansible_host=alcaji.ddns.net ansible_port=63333 ansible_user=alcaji
+
+[proxmox:vars]
+# Usar Python 3 obligatoriamente
+ansible_python_interpreter=/usr/bin/python3
+# Evitar que pregunte "¿Desea confiar en este host?" (útil para automatización)
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
